@@ -19,18 +19,24 @@ type KeyStoreCacheLoader interface {
 	Load(string) string
 }
 
+type keyValuePair struct {
+	key, value string
+}
+
 // KeyStoreCache is a LRU cache for string key-value pairs
 type KeyStoreCache struct {
-	cache map[string]string
-	pages list.List
-	load  func(string) string
+	cache       map[string]string
+	pages       list.List
+	load        func(string) string
+	writeBuffer chan keyValuePair
 }
 
 // New creates a new KeyStoreCache
 func New(load KeyStoreCacheLoader) *KeyStoreCache {
 	return &KeyStoreCache{
-		load:  load.Load,
-		cache: make(map[string]string),
+		load:        load.Load,
+		cache:       make(map[string]string),
+		writeBuffer: make(chan keyValuePair),
 	}
 }
 
@@ -41,16 +47,20 @@ func (k *KeyStoreCache) Get(key string) string {
 	// Miss - load from database and save it in cache
 	if !ok {
 		val = k.load(key)
-		k.pages.PushFront(key)
-
-		// if cache is full remove the least used item
-		if len(k.cache) > CacheSize {
-			delete(k.cache, k.pages.Back().Value.(string))
-			k.pages.Remove(k.pages.Back())
-		}
+		k.writeBuffer <- keyValuePair{key: key, value: val}
 	}
 
 	return val
+}
+
+func (k *KeyStoreCache) writeThreadSafe(kvp keyValuePair) {
+	k.pages.PushFront(kvp.key)
+
+	// if cache is full remove the least used item
+	if len(k.cache) > CacheSize {
+		delete(k.cache, k.pages.Back().Value.(string))
+		k.pages.Remove(k.pages.Back())
+	}
 }
 
 // Loader implements KeyStoreLoader
@@ -73,6 +83,16 @@ func main() {
 		DB: GetMockDB(),
 	}
 	cache := New(&loader)
+	go (func() {
+		for {
+			kvp, more := <-cache.writeBuffer
+			if more {
+				cache.writeThreadSafe(kvp)
+			} else {
+				return
+			}
+		}
+	})()
 
 	RunMockServer(cache)
 }
