@@ -13,10 +13,34 @@
 
 package main
 
+import "os"
+import "os/signal"
+import "syscall"
+
 func main() {
+	// Subscibe on SIGINTs
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	// Create a process
 	proc := MockProcess{}
 
-	// Run the process (blocking)
-	proc.Run()
+	go proc.Run()
+
+	// Try to shut down gracefully
+	<-sigs
+	println("\n Gracefully shutting down...")
+	gracefulShutDown := make(chan bool)
+	go func() {
+		proc.Stop()
+		gracefulShutDown <- true
+	}()
+
+	// Wait for a process shutdown or another SIGINT
+	select {
+	case <-gracefulShutDown:
+		println("\n Gracefully shut down!")
+	case <-sigs:
+		println("\n Killed on demand")
+	}
 }
